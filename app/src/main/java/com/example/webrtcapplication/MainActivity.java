@@ -14,10 +14,15 @@ import org.kurento.client.IceComponentStateChangeEvent;
 import org.kurento.client.IceGatheringDoneEvent;
 import org.kurento.client.KurentoClient;
 import org.kurento.client.MediaPipeline;
+import org.kurento.client.MediaProfileSpecType;
 import org.kurento.client.MediaStateChangedEvent;
 import org.kurento.client.NewCandidatePairSelectedEvent;
 import org.kurento.client.OnIceCandidateEvent;
+import org.kurento.client.PausedEvent;
 import org.kurento.client.PlayerEndpoint;
+import org.kurento.client.RecorderEndpoint;
+import org.kurento.client.RecordingEvent;
+import org.kurento.client.StoppedEvent;
 import org.kurento.client.WebRtcEndpoint;
 import org.kurento.commons.exception.KurentoException;
 import org.webrtc.AudioTrack;
@@ -37,7 +42,7 @@ import org.webrtc.VideoTrack;
 import java.util.ArrayList;
 
 /**
- * Basic WebRTC video streaming implementation with Kurento Media Server backend.
+ * Basic WebRTC video streaming & recording implementation with Kurento Media Server backend.
  *
  * Kurento Client Documentation: https://doc-kurento.readthedocs.io/en/stable/_static/client-javadoc/index.html
  */
@@ -47,6 +52,7 @@ public class MainActivity extends AppCompatActivity {
 
     private final String kurentoMediaServerURL = "ws://192.168.1.219:8888/kurento";
     private final String kurentoPlayerEndpointURL = "rtsp://admin:12345678test@192.168.1.108:554/cam/realmonitor?channel=1&subtype=1";
+    private final String kurentoRecorderEndpointURL = "file:///tmp/java-recording.webm";
     //private String kurentoPlayerEndpointURL = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
 
     private final EglBase eglBase = EglBase.create();
@@ -61,6 +67,7 @@ public class MainActivity extends AppCompatActivity {
     private KurentoClient kurentoClient = null;
     private WebRtcEndpoint webRTCEndpoint = null;
     private PlayerEndpoint playerEndpoint = null;
+    private RecorderEndpoint recorderEndpoint = null;
 
     private SurfaceViewRenderer localVideoView = null;
     private SurfaceViewRenderer remoteVideoView = null;
@@ -76,6 +83,15 @@ public class MainActivity extends AppCompatActivity {
         createKurentoClient();
 
         negotiateSDPOffer();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+
+        recorderEndpoint.stopAndWait();
+        playerEndpoint.stop();
+        webRTCEndpoint.release();
     }
 
     private void createPeerFactory() {
@@ -158,6 +174,7 @@ public class MainActivity extends AppCompatActivity {
 
         MediaPipeline pipeline = kurentoClient.createMediaPipeline();
         createWebRTCEndpoint(pipeline);
+        createRecorderEndpoint(pipeline);
         createPlayerEndpoint(pipeline);
     }
 
@@ -186,6 +203,22 @@ public class MainActivity extends AppCompatActivity {
         playerEndpoint.addEndOfStreamListener((EndOfStreamEvent event) ->
                 Log.d(tag, "playerEndpoint.addEndOfStreamListener: " + event.getTimestamp()));
         playerEndpoint.connect(webRTCEndpoint);
+        playerEndpoint.connect(recorderEndpoint);
+    }
+
+    private void createRecorderEndpoint(MediaPipeline pipeline) {
+        recorderEndpoint = new RecorderEndpoint.Builder(pipeline, kurentoRecorderEndpointURL)
+                .withMediaProfile(MediaProfileSpecType.WEBM_VIDEO_ONLY)
+                .stopOnEndOfStream()
+                .build();
+        recorderEndpoint.addPausedListener((PausedEvent event) ->
+                Log.d(tag, "recorderEndpoint.addPausedListener: " + event.toString()));
+        recorderEndpoint.addStoppedListener((StoppedEvent event) ->
+                Log.d(tag, "recorderEndpoint.addStoppedListener: " + event.toString()));
+        recorderEndpoint.addRecordingListener((RecordingEvent event) ->
+                Log.d(tag, "recorderEndpoint.addRecordingListener: " + event.toString()));
+        recorderEndpoint.addErrorListener((ErrorEvent event) ->
+                Log.d(tag, "recorderEndpoint.addErrorListener: " + event.getDescription()));
     }
 
     private void negotiateSDPOffer() {
@@ -215,7 +248,17 @@ public class MainActivity extends AppCompatActivity {
                                         Log.d(tag, "Ice Gathering State " + peer.iceGatheringState().name());
                                         Log.d(tag, "Ice Connection State " + peer.iceConnectionState().name());
 
-                                        playerEndpoint.play();
+                                        playerEndpoint.play(new Continuation<Void>() {
+                                            @Override
+                                            public void onSuccess(Void value) {
+                                                recorderEndpoint.record();
+                                            }
+
+                                            @Override
+                                            public void onError(Throwable throwable) {
+                                                Log.d(tag, "onError() => " + throwable);
+                                            }
+                                        });
                                     }
                                 }, new SessionDescription(SessionDescription.Type.PRANSWER, answer));
                             }
